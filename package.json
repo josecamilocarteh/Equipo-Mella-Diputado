@@ -1,0 +1,19 @@
+{
+  "name": "equipo-mella",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Plataforma de organización del equipo del diputado Cristián Mella",
+  "engines": {
+    "node": "22.x"
+  },
+  "dependencies": {
+    "@vercel/blob": "2.8.1"
+  },
+  "scripts": {
+    "build": "esbuild src/blob-entry.js --bundle --format=esm --platform=browser --minify --outfile=public/blob-client.js"
+  },
+  "devDependencies": {
+    "esbuild": "0.25.10"
+  }
+}
