@@ -1,4 +1,4 @@
-import { get, put, BlobPreconditionFailedError } from '@vercel/blob';
+import { get, head, put, BlobNotFoundError, BlobPreconditionFailedError } from '@vercel/blob';
 import { timingSafeEqual } from 'node:crypto';
 
 export const DATA_PATH = 'mella/data.json';
@@ -70,9 +70,24 @@ async function streamToString(stream) {
   return Buffer.concat(chunks).toString('utf8');
 }
 
+// La versión (etag) se toma de head(), que usa el mismo formato que put(). El etag del
+// encabezado HTTP de get() viene con otro formato (entre comillas) y nunca coincidiría.
+// Se consulta la versión ANTES de leer el contenido: si alguien guarda entremedio, la
+// versión leída queda antigua, el guardado condicional falla y se reintenta (no se pierde nada).
+async function currentEtag() {
+  try {
+    const h = await head(DATA_PATH);
+    return h && h.etag ? h.etag : null;
+  } catch (e) {
+    if (e instanceof BlobNotFoundError || /not.?found|does not exist/i.test(String(e && e.message))) return null;
+    throw e;
+  }
+}
+
 export async function loadData() {
-  const r = await get(DATA_PATH, { access: 'private', useCache: false });
-  if (!r || r.statusCode !== 200 || !r.stream) {
+  const etag = await currentEtag();
+  const r = etag ? await get(DATA_PATH, { access: 'private', useCache: false }) : null;
+  if (!etag || !r || r.statusCode !== 200 || !r.stream) {
     const data = seed();
     try {
       const w = await put(DATA_PATH, JSON.stringify(data), {
@@ -81,19 +96,20 @@ export async function loadData() {
       return { data, etag: w.etag };
     } catch (e) {
       // Otra solicitud lo creó al mismo tiempo: leer de nuevo.
-      const again = await get(DATA_PATH, { access: 'private', useCache: false });
-      return { data: JSON.parse(await streamToString(again.stream)), etag: again.blob.etag };
+      const again = await currentEtag();
+      const g = await get(DATA_PATH, { access: 'private', useCache: false });
+      return { data: JSON.parse(await streamToString(g.stream)), etag: again };
     }
   }
   const text = await streamToString(r.stream);
-  return { data: JSON.parse(text), etag: r.blob.etag };
+  return { data: JSON.parse(text), etag };
 }
 
 const MAX_BYTES = 4 * 1024 * 1024;
 
 // Aplica `mutate(data)` y guarda solo si nadie escribió entremedio; reintenta si hubo choque.
 export async function updateData(mutate) {
-  for (let attempt = 0; attempt < 5; attempt++) {
+  for (let attempt = 0; attempt < 8; attempt++) {
     const { data, etag } = await loadData();
     const result = mutate(data);
     const body = JSON.stringify(data);
